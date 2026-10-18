@@ -1,4 +1,4 @@
-// Renders a material test scene with skin::Relief and writes it to PNG.
+// Renders a material test scene with skin::Relief (knob, wells, keys, logotype) and writes it to PNG.
 #include "Skin.h"
 #include <cstdio>
 
@@ -6,31 +6,41 @@ int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui;
     const juce::String out = argc > 1 ? argv[1] : "relief.png";
-    const int W = 520, H = 300;
+    const int W = 560, H = 320;
+    const auto tint = skin::finishes()[0].tint;
+    const auto wm = skin::wordmark ({ 34.0f, 22.0f }, 21.0f);
+
     const auto t0 = juce::Time::getMillisecondCounterHiRes();
-    skin::Relief r (W, H, 2.0f, skin::finishes()[0].tint);
-    r.plate ({ 16, 16, 488, 268 }, 9, 6, 2.2f);
-    r.groove ({ 16, 16, 488, 268 }, 9, 1.0f, 0.5f);
-    r.recess ({ 30, 30, 200, 120 }, 7, 10, 3.0f, skin::Relief::Glass);
-    r.recess ({ 30, 170, 200, 54 }, 6, 4, 2.0f);
-    for (int i = 0; i < 4; ++i) r.plate ({ 36.0f + (float) i * 48.0f, 176, 42, 42 }, 4.5f, 5, 1.8f, skin::Relief::Cap);
-    r.mount ({ 340, 140 }, 44, 4);
-    r.knobBody ({ 340, 140 }, 38, 22);
-    r.mount ({ 450, 220 }, 30, 4);
-    r.knobBody ({ 450, 220 }, 25, 16);
+    skin::Relief r (W, H, 2.0f, tint);
+    r.plate ({ 0, 0, (float) W, (float) H }, 12, 3, 3.5f, skin::Relief::Chassis, skin::Relief::Edge);
+    for (auto& letter : wm.letters) r.emboss (letter, 2.2f, 0.55f, skin::Relief::Plate, skin::Relief::Edge);
+    juce::Path slit;
+    slit.addRectangle (wm.slitX0, wm.slitY - wm.slitHeight * 0.5f, wm.slitX1 - wm.slitX0, wm.slitHeight);
+    r.emboss (slit, -5.5f, 0.6f, skin::Relief::Floor, skin::Relief::Edge);
+
+    r.plate ({ 16, 78, 528, 226 }, 10, 7, 2.4f, skin::Relief::Plate);
+    r.recess ({ 30, 92, 220, 120 }, 8, 11, 3.2f, skin::Relief::Glass);
+    r.recess ({ 30, 226, 220, 62 }, 7, 4.5f, 2.0f);
+    r.mount ({ 370, 190 }, 43, 5);
+    r.knobBody ({ 370, 190 }, 37, 25);
+    r.mount ({ 486, 250 }, 30, 4);
+    r.knobBody ({ 486, 250 }, 26, 18);
     auto img = r.render();
     const auto t1 = juce::Time::getMillisecondCounterHiRes();
     auto small = img.rescaled (W, H, juce::Graphics::highResamplingQuality);
     {
         juce::Graphics g (small);
-        skin::knobScale (g, { 340, 140 }, 76, true);
-        skin::knobPointer (g, { 340, 140 }, 76, 1.2f);
-        skin::knobPointer (g, { 450, 220 }, 50, -0.8f);
-        skin::lens (g, { 36.0f + 48.0f + 4, 180, 34, 34 }, 3.0f, skin::accentA (1), 1.0f);
-        skin::lens (g, { 36.0f + 144.0f + 4, 180, 34, 34 }, 3.0f, skin::accentA (0), 1.0f);
-        g.setColour (skin::colours::text);
-        g.setFont (skin::label (13.0f));
-        g.drawText ("DEPTH", 300, 250, 80, 18, juce::Justification::centred);
+        skin::knobScale (g, { 370, 190 }, 74, true);
+        skin::knobRing (g, { 370, 190 }, 74, 0.62f, skin::accentA (0));
+        skin::knobPointer (g, { 370, 190 }, 74, -2.35619f + 4.71238f * 0.62f, skin::accentA (0));
+        skin::knobRing (g, { 486, 250 }, 52, 0.3f, skin::accentA (3));
+        skin::knobPointer (g, { 486, 250 }, 52, -2.35619f + 4.71238f * 0.3f, skin::accentA (3));
+        // light in the slit
+        juce::Path bar;
+        bar.startNewSubPath (wm.slitX0 + 2, wm.slitY);
+        bar.lineTo (wm.slitX1 - 2, wm.slitY);
+        g.setGradientFill (juce::ColourGradient (skin::accentA (3).withAlpha (0.0f), wm.slitX0, 0, skin::accentA (1), wm.bounds.getCentreX(), 0, false));
+        g.strokePath (bar, juce::PathStrokeType (0.8f));
     }
     juce::File f (out);
     f.deleteFile();

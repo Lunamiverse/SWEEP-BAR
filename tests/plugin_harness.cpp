@@ -83,6 +83,7 @@ static T* findChild (juce::Component& parent)
 
 static void snapshot (juce::Component& ed, const juce::String& file)
 {
+    if (auto* se = dynamic_cast<SweepbarEditor*> (&ed)) se->setIntroTime (10.0);   // settled title
     auto img = ed.createComponentSnapshot (ed.getLocalBounds(), true, 1.0f);
     juce::File f (file);
     f.deleteFile();
@@ -394,7 +395,7 @@ int main (int argc, char** argv)
     {
         SweepbarProcessor p;
         FakePlayHead ph;
-        ph.ppq = 2.2;
+        ph.ppq = 0.95;
         p.setPlayHead (&ph);
         p.prepareToPlay (48000.0, 512);
         for (int i = 0; i < 16; ++i)
@@ -418,6 +419,15 @@ int main (int argc, char** argv)
             p.processBlock (buf, midi);
             for (auto* c : ed->getChildren())
                 if (auto* m = dynamic_cast<ui::LevelMeter*> (c)) m->tick();
+            if (f == 0)   // let the energy point emit particles for a moment
+                for (int k = 0; k < 24; ++k)
+                {
+                    ph.ppq += 0.02;
+                    p.processBlock (buf, midi);
+                    for (auto* c : ed->getChildren())
+                        if (auto* cv = dynamic_cast<ui::CurveView*> (c)) cv->tick();
+                    juce::Thread::sleep (15);
+                }
             snapshot (*ed, outDir + "/ui_finish_" + juce::String (f) + ".png");
         }
         std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
@@ -432,6 +442,37 @@ int main (int argc, char** argv)
         const double cv = (juce::Time::getMillisecondCounterHiRes() - t1) / 10.0;
         std::printf ("paint cost: whole window %.1f ms, curve screen %.1f ms (16 neon beats)\n", full, cv);
         check (cv < 40.0, "curve screen paints fast enough for live updates");
+    }
+
+    // ---- opening title sequence: filmstrip of the header at fixed times
+    {
+        SweepbarProcessor p;
+        p.prepareToPlay (48000.0, 512);
+        std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
+        auto* se = dynamic_cast<SweepbarEditor*> (ed.get());
+        check (se != nullptr, "editor type");
+        const double times[] = { 0.10, 0.30, 0.50, 0.70, 0.90, 1.10, 1.30, 1.50, 2.00 };
+        const juce::Rectangle<int> area (0, 0, 420, 76);
+        juce::Image strip (juce::Image::RGB, area.getWidth(), area.getHeight() * 9, true);
+        juce::Graphics sg (strip);
+        double worst = 0.0;
+        for (int k = 0; k < 9; ++k)
+        {
+            se->setIntroTime (times[k]);
+            const auto t0 = juce::Time::getMillisecondCounterHiRes();
+            auto frame = ed->createComponentSnapshot (area, true, 1.0f);
+            worst = juce::jmax (worst, juce::Time::getMillisecondCounterHiRes() - t0);
+            sg.drawImageAt (frame, 0, k * area.getHeight());
+            sg.setColour (juce::Colours::white.withAlpha (0.6f));
+            sg.setFont (11.0f);
+            sg.drawText (juce::String (times[k], 2) + " s", 360, k * area.getHeight() + 4, 56, 14, juce::Justification::right);
+        }
+        juce::File f (outDir + "/intro_filmstrip.png");
+        f.deleteFile();
+        juce::FileOutputStream os (f);
+        juce::PNGImageFormat().writeImageToStream (strip, os);
+        std::printf ("intro: filmstrip written, slowest frame %.1f ms\n", worst);
+        check (worst < 40.0, "intro frames render fast enough for smooth motion");
     }
 
     std::printf (failures ? "\n%d FAILURE(S)\n" : "\nALL PLUGIN TESTS PASSED\n", failures);

@@ -1,10 +1,19 @@
-# Sweepbar 0.5.0
+# SWEEP BAR 0.6.0
 
 Beat-synced vocal ear candy. Like Kickstart, a curve fires on the beat, but instead of ducking
 volume it drives an effect on the vocal. You pick which beats fire, which effect each beat uses,
 and how long the pattern is, and you can draw your own curves.
 
-**New in 0.5.0:** rebuilt as photorealistic studio hardware. The chassis, plates, recessed
+**New in 0.6.0:** absolute-black industrial design. New SWEEP BAR logotype (custom letterforms,
+embossed in the chassis, split by a light slit) with an opening title sequence: a point of light
+sweeps through the slit and the letters rise out of the metal, physically lit every frame.
+New controls: dark-chrome lathe-turned knobs with a floating black-titanium ring, a polished
+obsidian cap, a luminous indicator slot and a value light glowing up from the mount. Waveforms in a
+spectral palette (spectral cyan, icy silver, indigo, ultraviolet, deep magenta, champagne) with an
+energy point that rides the curve with the playhead, fine sparks and spectral striations.
+Finishes: Obsidian, Black Titanium, Carbon, Midnight, Onyx Bronze. Mac version (AU + VST3).
+
+**0.5.0:** rebuilt as photorealistic studio hardware. The chassis, plates, recessed
 wells, glass displays, switch caps and machined knobs are modelled in 3D and lit per pixel
 (key and rim lights, ambient occlusion, cast shadows, anodized, brushed and spun-metal materials).
 Waveforms are layered light: spectral fills, bloom, crisp cores. The input/output meters now show
@@ -35,7 +44,7 @@ hardware-style look, a Smooth knob, and input/output gain.
 To remove it: **Settings > Apps > Sweepbar > Uninstall**. Running the installer again
 replaces an existing copy, which is how you update to a new version.
 
-**Manually:** unzip `Sweepbar-0.5.0-win64-VST3.zip`, copy the whole `Sweepbar.vst3` folder into
+**Manually:** unzip `Sweepbar-0.6.0-win64-VST3.zip`, copy the whole `Sweepbar.vst3` folder into
 `C:\Program Files\Common Files\VST3`, then continue from step 3.
 
 ## Install on Mac (FL Studio, Logic, Ableton, any AU/VST3 host)
@@ -75,7 +84,7 @@ sudo xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/Sweepbar.vst3 /
 | Footer | INPUT / OUTPUT | Live level meters, and faders for gain into and out of Sweepbar (-24 to +12 dB). Double-click a fader to reset |
 
 The status light next to the name is lit while FL Studio is playing. The selector at the top
-right switches the chassis metal: Graphite, Gunmetal, Obsidian, Titanium or Bronze. The finish is
+right switches the chassis finish: Obsidian, Black Titanium, Carbon, Midnight or Onyx Bronze. The finish is
 saved with the project. INPUT and OUTPUT meters show the signal level going in and out (-48 to +3 dB,
 with a held peak); the faders next to them set input and output gain.
 

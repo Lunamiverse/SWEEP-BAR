@@ -21,9 +21,9 @@ juce::Font numeric (float height, Weight = Weight::SemiBold);
 
 namespace colours
 {
-    const juce::Colour text      { 0xffe6e7ea };   // silk-screen legend
-    const juce::Colour textDim   { 0xff9a9ea8 };
-    const juce::Colour textFaint { 0xff5d6069 };
+    const juce::Colour text      { 0xffdde3ec };   // icy silver legend
+    const juce::Colour textDim   { 0xff8c94a4 };
+    const juce::Colour textFaint { 0xff505664 };
     const juce::Colour ink       { 0xff0a0a0c };
 }
 
@@ -38,10 +38,15 @@ juce::Colour accentB (int effect);
 class Relief
 {
 public:
-    enum Mat : uint8_t { Empty, Chassis, Plate, Edge, Floor, Glass, Rubber, Knurl, Spun, Cap };
+    enum Mat : uint8_t { Empty, Chassis, Plate, Edge, Floor, Glass, Rubber, Knurl, Spun, Cap, Chrome, Titanium, Obsidian };
 
     // Logical size in UI points; `scale` = internal pixels per point (supersampling / HiDPI).
-    Relief (int width, int height, float scale, juce::Colour tint, bool transparent = false);
+    // `origin`: where this relief sits in window coordinates. All geometry is given in window coordinates,
+    // and surface grain is keyed to them, so a partial re-render of a region matches the full chassis exactly.
+    Relief (int width, int height, float scale, juce::Colour tint, bool transparent = false, juce::Point<float> origin = {});
+
+    // Raise (height > 0) or engrave (height < 0) an arbitrary filled path, with a soft machined bevel.
+    void emboss (const juce::Path&, float height, float bevel, Mat top, Mat edge = Edge);
 
     // Raised rounded block. `height`, `bevel` in points. Top surface gets `top`, its chamfer `edge`.
     void plate (juce::Rectangle<float>, float radius, float height, float bevel, Mat top = Plate, Mat edge = Edge);
@@ -64,6 +69,7 @@ private:
 
     int W, H;
     float s;
+    float ox = 0.0f, oy = 0.0f;
     juce::Colour tint;
     bool transparent;
     std::vector<float> h;         // height, internal pixels
@@ -80,8 +86,23 @@ void glowStroke (juce::Graphics&, const juce::Path&, juce::Colour core, float wi
 void led (juce::Graphics&, juce::Point<float> centre, float radius, juce::Colour, bool on);
 void lens (juce::Graphics&, juce::Rectangle<float>, float radius, juce::Colour, float strength);   // backlit key lens
 void ledMeter (juce::Graphics&, juce::Rectangle<float>, int segments, float level01, float peak01);
-void knobPointer (juce::Graphics&, juce::Point<float> centre, float diameter, float angle);
+// Luminous indicator slot cut into the knob's titanium ring.
+void knobPointer (juce::Graphics&, juce::Point<float> centre, float diameter, float angle, juce::Colour light);
+// Value light glowing up from the gap between knob and mount.
+void knobRing (juce::Graphics&, juce::Point<float> centre, float diameter, float value01, juce::Colour light);
 void knobScale (juce::Graphics&, juce::Point<float> centre, float diameter, bool numbers);   // engraved ticks + numerals
+
+// The SWEEP BAR logotype: custom geometric letterforms (filled outlines), cap top-left at `origin`,
+// cap height `capHeight`. Each letter is returned separately (for the opening animation); `slitY` and the
+// slit's x-extent are where the light bar runs through the name.
+struct Wordmark
+{
+    std::vector<juce::Path> letters;
+    juce::Path all;
+    float slitY = 0.0f, slitX0 = 0.0f, slitX1 = 0.0f, slitHeight = 1.3f;
+    juce::Rectangle<float> bounds;
+};
+Wordmark wordmark (juce::Point<float> origin, float capHeight);
 juce::Image faderCap (int width, int height, float scale);
 // Raised key cap with its own contact + cast shadow. Image covers (w + 2*kCapMargin) x (h + 2*kCapMargin) points.
 constexpr int kCapMargin = 7;

@@ -103,13 +103,24 @@ public:
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
+    void tick();   // animation step (energy point + particles), called by the editor's frame timer
 
 private:
     juce::Rectangle<float> plotArea() const;
     void drawSegment (juce::Point<float> a, juce::Point<float> b);
+    void renderStatic (juce::Graphics&);      // grid + layered-light curves (cached)
+    void paintEnergy (juce::Graphics&);       // live: playhead, energy point riding the curve, particles
+    juce::String staticKey() const;
+    double playPosition();                    // smoothed pattern position in beats
 
     SweepbarProcessor& proc;
     juce::Image fillLayer, bloomWide, bloomTight;
+    juce::Image staticLayer;
+    juce::String staticLayerKey;
+    struct Particle { juce::Point<float> pos, vel; float life, maxLife, size; juce::Colour colour; };
+    std::vector<Particle> particles;
+    juce::Random random { 2070 };
+    double lastPos = -1.0, lastPosMs = 0.0, lastTickMs = 0.0;
     juce::Point<float> last;
     bool erasing = false;
     std::array<bool, sweep::kMaxSteps> touched {};
@@ -219,9 +230,17 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
+    // Opening title sequence. Pass a time in seconds to freeze it there (screenshots/tests);
+    // anything >= introLength shows the settled state. Negative = run in real time (default).
+    void setIntroTime (double seconds);
+    static constexpr double introLength = 1.8;
+
 private:
     void timerCallback() override;
     void mouseDown (const juce::MouseEvent&) override;
+    double introTime() const;
+    void addLogoRelief (skin::Relief&, double t) const;   // letters + light slit, risen according to t
+    void paintLogoLight (juce::Graphics&, double t);
     void openSettings (int effect);
     void rebuildBackground();
     int finishIndex() const;
@@ -256,6 +275,13 @@ private:
     float backgroundScale = 0.0f;
     int backgroundFinish = -1;
     juce::String lastSignature;
+
+    skin::Wordmark logo;
+    juce::Rectangle<int> logoRegion;
+    double introStartMs = -1.0, introOverride = -1.0;
+    bool introRunning = false;
+    juce::Image introFrame;
+    double introFrameTime = -1.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SweepbarEditor)
 };

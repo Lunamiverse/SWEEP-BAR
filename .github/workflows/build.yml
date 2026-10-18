@@ -49,10 +49,26 @@ jobs:
           (cd zip && ditto -c -k --sequesterRsrc --keepParent "SweepBar-$VERSION-macOS" "../dist/SweepBar-$VERSION-macOS.zip")
           ls -la dist
 
+      - name: Verify universal binaries (Apple Silicon + Intel)
+        run: |
+          A=build/Sweepbar_artefacts/Release
+          lipo "$A/VST3/Sweepbar.vst3/Contents/MacOS/Sweepbar" -verify_arch arm64 x86_64
+          lipo "$A/AU/Sweepbar.component/Contents/MacOS/Sweepbar" -verify_arch arm64 x86_64
+          echo "universal: OK"
+
       - uses: actions/upload-artifact@v4
         with:
           name: macos
           path: dist/*
+
+      - name: Validate the Audio Unit with Apple's auval
+        continue-on-error: true
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R build/Sweepbar_artefacts/Release/AU/Sweepbar.component ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 3
+          auval -v aufx Swb1 Swbp
 
   windows:
     name: Windows (VST3, MSVC)
@@ -100,5 +116,5 @@ jobs:
         run: |
           gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --title "SWEEP BAR ${GITHUB_REF_NAME#v}" \
-                 --notes "Mac: open the .pkg installer (right-click > Open the first time). Windows: SweepBarSetup.exe."
+                 --notes "Mac: open the .pkg installer (right-click > Open the first time; see README). Windows: run SweepBarSetup.exe."
           gh release upload "$GITHUB_REF_NAME" dist/* -R "$GITHUB_REPOSITORY" --clobber

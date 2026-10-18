@@ -2,6 +2,7 @@
 #include "FontData.h"
 #include <map>
 #include <thread>
+#include <functional>
 
 namespace skin
 {
@@ -31,26 +32,27 @@ juce::Font numeric (float height, Weight w) { return font (height, w, false).wit
 const std::array<Finish, 5>& finishes()
 {
     static const std::array<Finish, 5> f {{
-        { "Graphite", juce::Colour (0xff1b1c1f) },
-        { "Gunmetal", juce::Colour (0xff1a1d22) },
-        { "Obsidian", juce::Colour (0xff121214) },
-        { "Titanium", juce::Colour (0xff232324) },
-        { "Bronze",   juce::Colour (0xff221d19) },
+        { "Obsidian",       juce::Colour (0xff0b0b0d) },
+        { "Black Titanium", juce::Colour (0xff0e0f11) },
+        { "Carbon",         juce::Colour (0xff0a0a0a) },
+        { "Midnight",       juce::Colour (0xff0a0c12) },
+        { "Onyx Bronze",    juce::Colour (0xff100d0b) },
     }};
     return f;
 }
 
+// Restrained spectral palette: spectral cyan, icy silver, electric indigo, ultraviolet, deep magenta, champagne.
 juce::Colour accentA (int e)
 {
-    static const juce::Colour c[] = { juce::Colour (0xffff6a3d), juce::Colour (0xff2ee6ff), juce::Colour (0xff8f5bff),
-                                      juce::Colour (0xff35f5c4), juce::Colour (0xffff3d8f), juce::Colour (0xffffb43d) };
+    static const juce::Colour c[] = { juce::Colour (0xff2fe3ff), juce::Colour (0xffdfe7ff), juce::Colour (0xff5b6cff),
+                                      juce::Colour (0xffa35cff), juce::Colour (0xffff2f9f), juce::Colour (0xfff2c98a) };
     return c[juce::jlimit (0, 5, e)];
 }
 
 juce::Colour accentB (int e)
 {
-    static const juce::Colour c[] = { juce::Colour (0xffff9a52), juce::Colour (0xff3d86ff), juce::Colour (0xffc65bff),
-                                      juce::Colour (0xff2ec8ff), juce::Colour (0xffff6a6a), juce::Colour (0xffff7a3d) };
+    static const juce::Colour c[] = { juce::Colour (0xff5b8cff), juce::Colour (0xff9fb3ff), juce::Colour (0xff8f5cff),
+                                      juce::Colour (0xffd95cff), juce::Colour (0xffff5ccf), juce::Colour (0xffff9e6e) };
     return c[juce::jlimit (0, 5, e)];
 }
 
@@ -115,9 +117,9 @@ static void blurField (std::vector<float>& f, int W, int H, int r, int passes)
 
 //==============================================================================
 // Relief
-Relief::Relief (int width, int height, float scale, juce::Colour t, bool transp)
+Relief::Relief (int width, int height, float scale, juce::Colour t, bool transp, juce::Point<float> origin)
     : W (juce::jmax (1, (int) std::ceil ((float) width * scale))), H (juce::jmax (1, (int) std::ceil ((float) height * scale))),
-      s (scale), tint (t), transparent (transp)
+      s (scale), ox (origin.x), oy (origin.y), tint (t), transparent (transp)
 {
     const size_t n = (size_t) W * (size_t) H;
     h.assign (n, 0.0f);
@@ -138,11 +140,50 @@ float Relief::sdRect (float px, float py, juce::Rectangle<float> r, float radius
 template <typename Fn>
 void Relief::forBox (juce::Rectangle<float> box, Fn&& fn)
 {
-    const int x0 = juce::jmax (0, (int) std::floor ((box.getX() - 2.0f) * s)), x1 = juce::jmin (W, (int) std::ceil ((box.getRight() + 2.0f) * s));
-    const int y0 = juce::jmax (0, (int) std::floor ((box.getY() - 2.0f) * s)), y1 = juce::jmin (H, (int) std::ceil ((box.getBottom() + 2.0f) * s));
+    const int x0 = juce::jmax (0, (int) std::floor ((box.getX() - ox - 2.0f) * s)), x1 = juce::jmin (W, (int) std::ceil ((box.getRight() - ox + 2.0f) * s));
+    const int y0 = juce::jmax (0, (int) std::floor ((box.getY() - oy - 2.0f) * s)), y1 = juce::jmin (H, (int) std::ceil ((box.getBottom() - oy + 2.0f) * s));
     for (int y = y0; y < y1; ++y)
         for (int x = x0; x < x1; ++x)
-            fn ((size_t) y * (size_t) W + (size_t) x, ((float) x + 0.5f) / s, ((float) y + 0.5f) / s);
+            fn ((size_t) y * (size_t) W + (size_t) x, ((float) x + 0.5f) / s + ox, ((float) y + 0.5f) / s + oy);
+}
+
+void Relief::emboss (const juce::Path& path, float height, float bevel, Mat top, Mat edge)
+{
+    // rasterise the shape, soften it into a bevel profile, and add it to the height field
+    juce::Image mask (juce::Image::SingleChannel, W, H, true);
+    {
+        juce::Graphics g (mask);
+        g.addTransform (juce::AffineTransform::translation (-ox, -oy).scaled (s));
+        g.setColour (juce::Colours::white);
+        g.fillPath (path);
+    }
+    const auto box = path.getBounds().expanded (bevel + 2.0f);
+    const int x0 = juce::jmax (0, (int) std::floor ((box.getX() - ox) * s)), x1 = juce::jmin (W, (int) std::ceil ((box.getRight() - ox) * s));
+    const int y0 = juce::jmax (0, (int) std::floor ((box.getY() - oy) * s)), y1 = juce::jmin (H, (int) std::ceil ((box.getBottom() - oy) * s));
+    if (x1 <= x0 || y1 <= y0) return;
+    const int bw = x1 - x0, bh = y1 - y0;
+    std::vector<float> m ((size_t) bw * (size_t) bh), hard ((size_t) bw * (size_t) bh);
+    {
+        juce::Image::BitmapData d (mask, juce::Image::BitmapData::readOnly);
+        for (int y = 0; y < bh; ++y)
+            for (int x = 0; x < bw; ++x)
+                hard[(size_t) y * bw + x] = m[(size_t) y * bw + x] = (float) *d.getPixelPointer (x0 + x, y0 + y) / 255.0f;
+    }
+    blurField (m, bw, bh, juce::jmax (1, juce::roundToInt (bevel * s * 0.5f)), 2);
+    for (int y = 0; y < bh; ++y)
+        for (int x = 0; x < bw; ++x)
+        {
+            const float v = m[(size_t) y * bw + x];
+            if (v <= 0.002f) continue;
+            const size_t i = (size_t) (y0 + y) * (size_t) W + (size_t) (x0 + x);
+            h[i] += height * s * smoother ((v - 0.02f) / 0.96f);
+            if (hard[(size_t) y * bw + x] > 0.5f || v > 0.04f)
+            {
+                mat[i] = v > 0.96f ? top : edge;
+                spin[i] = 0;
+                if (transparent) cover[i] = juce::jmax (cover[i], juce::jmin (1.0f, v * 2.0f));
+            }
+        }
 }
 
 void Relief::setMat (int i, Mat m, float coverage)
@@ -219,36 +260,49 @@ void Relief::mount (juce::Point<float> c, float radius, float depth)
 
 void Relief::knobBody (juce::Point<float> c, float R, float height)
 {
+    // SWEEP BAR control, layered like a machined assembly:
+    //   dark-chrome lathe-turned skirt  |  deep separation groove  |  floating black-titanium ring
+    //   (conical, spun)                 |  fine inner groove       |  polished obsidian dome cap
     spinCentres.push_back (c);
     const auto idx = (uint8_t) juce::jmin (255, (int) spinCentres.size() - 1);
-    const int flutes = 36;
     forBox (juce::Rectangle<float> (R * 2.0f, R * 2.0f).withCentre (c), [&] (size_t i, float px, float py)
     {
-        const float dx = px - c.x, dy = py - c.y;
-        const float r = std::sqrt (dx * dx + dy * dy);
+        const float r = std::hypot (px - c.x, py - c.y);
         if (r > R + 0.75f / s) return;
-        const float theta = std::atan2 (dy, dx);
+        auto bell = [] (float x, float centre, float halfWidth) { const float u = (x - centre) / halfWidth; return u * u < 1.0f ? (1.0f - u * u) * (1.0f - u * u) : 0.0f; };
 
-        // skirt: a cylinder with a rounded top edge
-        float z = height * smoother ((R - r) / (0.11f * R));
-        Mat m = Knurl;
-        // knurling on the skirt: fine vertical flutes
-        const float knurlW = smoother ((r - 0.80f * R) / (0.035f * R)) * (1.0f - smoother ((r - 0.895f * R) / (0.03f * R)));
-        z -= 0.85f * knurlW * (0.5f + 0.5f * std::cos ((float) flutes * theta));
-        // machined chamfer stepping up to the spun face
-        const float step = smoother ((0.805f * R - r) / (0.06f * R));
-        z += 2.6f * step;
-        if (r > 0.925f * R) m = Edge;                       // polished rim catches the light
-        if (r < 0.805f * R && r > 0.745f * R) m = Edge;
-        if (r <= 0.745f * R) m = Spun;
-        // fine groove separating chamfer and face, and a concave centre
-        if (std::abs (r - 0.745f * R) < 0.6f) z -= 0.35f;
-        const float cr = 0.12f * R;
-        if (r < cr) { const float u = r / cr; z -= 0.9f * (1.0f - u * u); }
+        // skirt: a cylinder with a rounded shoulder and fine lathe rings
+        float z = height * smoother ((R - r) / (0.10f * R));
+        z += 0.10f * std::sin (r * 6.9813f);                     // ~0.9 pt turning marks
+        Mat m = Chrome;
+        if (r > 0.955f * R) m = Edge;                            // polished shoulder catches the key light
+
+        // deep separation groove: the inner ring appears to float above the skirt
+        z -= 3.2f * bell (r, 0.882f * R, 0.022f * R);
+        if (std::abs (r - 0.882f * R) < 0.016f * R) m = Floor;
+
+        // floating titanium ring: raised, gently conical so it carries a reflection band
+        const float ringLift = smoother ((0.866f * R - r) / (0.03f * R));
+        z += ringLift * (2.4f - 0.9f * juce::jlimit (0.0f, 1.0f, (r - 0.60f * R) / (0.266f * R)));
+        if (r < 0.866f * R && r >= 0.60f * R) m = (r > 0.840f * R) ? Edge : Titanium;
+
+        // fine inner groove, then the obsidian dome
+        z -= 1.5f * bell (r, 0.588f * R, 0.016f * R);
+        if (r < 0.60f * R && r >= 0.576f * R) m = Floor;
+        const float capR = 0.576f * R;
+        if (r < capR)
+        {
+            // spherical dome: enough curvature to catch a crisp reflection of the key light
+            const float Rs = capR * 1.30f;
+            const float sag = Rs - std::sqrt (Rs * Rs - capR * capR);
+            const float dome = std::sqrt (juce::jmax (0.0f, Rs * Rs - r * r)) - (Rs - sag);
+            z += smoother ((capR - r) / (0.04f * R)) * (0.5f + dome);
+            m = r > capR - 0.03f * R ? Edge : Obsidian;
+        }
 
         h[i] += z * s;
         mat[i] = m;
-        spin[i] = (m == Spun || m == Knurl) ? idx : 0;
+        spin[i] = (m == Chrome || m == Titanium) ? idx : 0;
     });
 }
 
@@ -314,22 +368,29 @@ juce::Image Relief::render()
     const float tr = tint.getFloatRed(), tg = tint.getFloatGreen(), tb = tint.getFloatBlue();
     const M table[] = {
         { 0, 0, 0, 1, 0, 0, 0 },                                   // Empty
-        { tr * 0.78f, tg * 0.78f, tb * 0.78f, 16, 0.16f, 0.6f, 1 },  // Chassis: black anodized, brushed
-        { tr * 1.12f, tg * 1.12f, tb * 1.12f, 20, 0.22f, 0.7f, 1 },  // Plate: gunmetal, brushed
-        { 0.50f, 0.51f, 0.55f, 75, 1.05f, 1.0f, 0 },               // Edge: polished chamfer
-        { 0.030f, 0.032f, 0.036f, 10, 0.05f, 0.0f, 0 },            // Floor: matte black
-        { 0.010f, 0.012f, 0.016f, 220, 0.60f, 0.0f, 0 },           // Glass
-        { 0.055f, 0.055f, 0.060f, 6, 0.04f, 0.0f, 0 },             // Rubber
-        { 0.085f, 0.088f, 0.096f, 40, 0.55f, 0.85f, 0 },           // Knurl: black anodized
-        { 0.135f, 0.140f, 0.152f, 42, 1.10f, 1.0f, 2 },            // Spun: dark anodized aluminium face
-        { tr * 1.45f, tg * 1.45f, tb * 1.45f, 30, 0.30f, 0.5f, 0 },  // Cap: anodized key cap
+        { tr * 0.70f, tg * 0.70f, tb * 0.70f, 12, 0.05f, 0.5f, 1 },  // Chassis: matte black anodized, fine brushing
+        { tr * 1.05f, tg * 1.05f, tb * 1.05f, 26, 0.10f, 0.7f, 1 },  // Plate: satin black titanium, brushed
+        { 0.30f, 0.31f, 0.34f, 90, 1.10f, 1.0f, 0 },               // Edge: polished dark-chrome chamfer
+        { 0.012f, 0.012f, 0.014f, 10, 0.04f, 0.0f, 0 },            // Floor: carbon black
+        { 0.004f, 0.005f, 0.007f, 260, 0.55f, 0.0f, 0 },           // Glass: smoked
+        { 0.030f, 0.030f, 0.032f, 6, 0.03f, 0.0f, 0 },             // Rubber
+        { 0.050f, 0.052f, 0.058f, 40, 0.50f, 0.85f, 0 },           // Knurl: black anodized
+        { 0.095f, 0.098f, 0.108f, 42, 1.00f, 1.0f, 2 },            // Spun: black anodized aluminium face
+        { tr * 1.35f, tg * 1.35f, tb * 1.35f, 34, 0.20f, 0.5f, 0 },  // Cap: anodized key cap
+        { 0.16f, 0.165f, 0.18f, 140, 1.35f, 1.0f, 2 },             // Chrome: dark chrome, lathe-turned
+        { 0.060f, 0.062f, 0.068f, 34, 0.85f, 0.9f, 2 },            // Titanium: satin black titanium, spun
+        { 0.006f, 0.006f, 0.008f, 150, 1.40f, 0.0f, 0 },           // Obsidian: polished volcanic glass
     };
 
+    const int oxp = juce::roundToInt (ox * s), oyp = juce::roundToInt (oy * s);   // absolute pixel offset
     std::vector<float> rowNoise ((size_t) H);
     for (int y = 0; y < H; ++y)
-        rowNoise[(size_t) y] = hash01 ((uint32_t) y * 2654435761U) * 0.55f
-                             + hash01 ((uint32_t) (y / juce::jmax (1, (int) (2 * s))) * 40503U + 7U) * 0.30f
-                             + hash01 ((uint32_t) (y / juce::jmax (1, (int) (9 * s))) * 9176U + 3U) * 0.15f;
+    {
+        const int ay = y + oyp;
+        rowNoise[(size_t) y] = hash01 ((uint32_t) ay * 2654435761U) * 0.55f
+                             + hash01 ((uint32_t) (ay / juce::jmax (1, (int) (2 * s))) * 40503U + 7U) * 0.30f
+                             + hash01 ((uint32_t) (ay / juce::jmax (1, (int) (9 * s))) * 9176U + 3U) * 0.15f;
+    }
 
     juce::Image img (juce::Image::ARGB, W, H, true);
     juce::Image::BitmapData data (img, juce::Image::BitmapData::writeOnly);
@@ -359,10 +420,10 @@ juce::Image Relief::render()
 
             // albedo + micro detail
             float ar = m.r, ag = m.g, ab = m.b, specMul = 1.0f;
-            const float px = hash01 ((uint32_t) (x * 73856093) ^ (uint32_t) (y * 19349663));
+            const float px = hash01 ((uint32_t) ((x + oxp) * 73856093) ^ (uint32_t) ((y + oyp) * 19349663));
             if (m.aniso == 1)
             {
-                const float streak = hash01 ((uint32_t) (x / juce::jmax (1, (int) (40 * s))) * 83492791U ^ (uint32_t) y * 2246822519U);
+                const float streak = hash01 ((uint32_t) ((x + oxp) / juce::jmax (1, (int) (40 * s))) * 83492791U ^ (uint32_t) (y + oyp) * 2246822519U);
                 const float g = 0.09f * (rowNoise[(size_t) y] - 0.5f) + 0.06f * (streak - 0.5f) + 0.05f * (px - 0.5f);
                 ar *= 1.0f + g; ag *= 1.0f + g; ab *= 1.0f + g;
                 specMul = 0.8f + 0.4f * rowNoise[(size_t) y];
@@ -370,7 +431,7 @@ juce::Image Relief::render()
             else if (m.aniso == 2 && spin[i] != 0)
             {
                 const auto c = spinCentres[spin[i]];
-                const float rr = std::hypot (((float) x + 0.5f) / s - c.x, ((float) y + 0.5f) / s - c.y) * s;
+                const float rr = std::hypot (((float) x + 0.5f) / s + ox - c.x, ((float) y + 0.5f) / s + oy - c.y) * s;
                 const float ring = hash01 ((uint32_t) (rr * 1.3f) * 2654435761U);
                 ar *= 0.94f + 0.12f * ring; ag *= 0.94f + 0.12f * ring; ab *= 0.94f + 0.12f * ring;
                 specMul = 0.65f + 0.7f * hash01 ((uint32_t) (rr * 0.7f) * 40503U + 3U);
@@ -384,7 +445,7 @@ juce::Image Relief::render()
             // diffuse: sky ambient (occluded), key (shadowed), cool rim
             const float ndl = juce::jmax (0.0f, nx * Lx + ny * Ly + nz * Lz);
             const float ndr = juce::jmax (0.0f, nx * Rx + ny * Ry + nz * Rz);
-            const float amb = 0.34f * (0.5f + 0.5f * nz) * ao;
+            const float amb = 0.24f * (0.5f + 0.5f * nz) * ao;
             const float key = 1.10f * ndl * sh * (0.55f + 0.45f * ao);
             const float rim = 0.30f * ndr * ao;
             float cr = ar * (amb + key + rim * 0.85f), cg = ag * (amb + key + rim * 0.92f), cb = ab * (amb + key + rim * 1.10f);
@@ -401,7 +462,7 @@ juce::Image Relief::render()
                 if (m.aniso == 2)
                 {
                     const auto c = spinCentres[spin[i]];
-                    const float dx = ((float) x + 0.5f) / s - c.x, dy = ((float) y + 0.5f) / s - c.y;
+                    const float dx = ((float) x + 0.5f) / s + ox - c.x, dy = ((float) y + 0.5f) / s + oy - c.y;
                     const float dl = std::sqrt (dx * dx + dy * dy) + 1e-4f;
                     tx = -dy / dl; ty = dx / dl;                     // spun: grooves run around the centre
                 }
@@ -544,7 +605,7 @@ void ledMeter (juce::Graphics& g, juce::Rectangle<float> r, int n, float level, 
     for (int i = 0; i < n; ++i)
     {
         const float pos = ((float) i + 0.5f) / (float) n;
-        const juce::Colour c = pos < 0.70f ? juce::Colour (0xff2ee6ff) : (pos < 0.88f ? juce::Colour (0xffffb43d) : juce::Colour (0xffff4d3d));
+        const juce::Colour c = pos < 0.70f ? juce::Colour (0xff2fe3ff) : (pos < 0.88f ? juce::Colour (0xffa35cff) : juce::Colour (0xffff2f9f));
         const bool lit = pos < level || i == peakSeg;
         if (lit) ++litCount;
         const juce::Rectangle<float> seg (r.getX() + (float) i * (w + gap), r.getY(), w, r.getHeight());
@@ -568,41 +629,62 @@ void ledMeter (juce::Graphics& g, juce::Rectangle<float> r, int n, float level, 
     }
 }
 
-void knobPointer (juce::Graphics& g, juce::Point<float> c, float D, float angle)
+void knobPointer (juce::Graphics& g, juce::Point<float> c, float D, float angle, juce::Colour light)
 {
+    // a slot machined into the titanium ring with a light guide inside it
     const float R = D * 0.5f;
     const juce::Point<float> d (std::sin (angle), -std::cos (angle));
-    const juce::Line<float> line (c + d * (R * 0.22f), c + d * (R * 0.68f));
-    // engraved groove: dark trench offset away from the light, then paint fill
-    g.setColour (juce::Colours::black.withAlpha (0.7f));
-    g.drawLine (line.withShortenedStart (-0.5f).withShortenedEnd (-0.5f).toFloat(), juce::jmax (3.4f, R * 0.11f));
-    g.setColour (juce::Colour (0xfff4f4f6));
-    g.drawLine (line, juce::jmax (2.0f, R * 0.062f));
-    g.setColour (juce::Colours::white);
-    g.drawLine (line.withShortenedStart (R * 0.04f).withShortenedEnd (R * 0.04f), juce::jmax (0.8f, R * 0.022f));
+    const juce::Line<float> line (c + d * (R * 0.635f), c + d * (R * 0.825f));
+    g.setColour (juce::Colours::black.withAlpha (0.9f));
+    g.drawLine (line, juce::jmax (3.2f, R * 0.10f));
+    juce::Path core;
+    core.startNewSubPath (line.getStart());
+    core.lineTo (line.getEnd());
+    juce::Path thick;
+    juce::PathStrokeType (juce::jmax (2.0f, R * 0.06f), juce::PathStrokeType::curved, juce::PathStrokeType::rounded).createStrokedPath (thick, core);
+    juce::DropShadow (light.withAlpha (0.85f), juce::roundToInt (juce::jmax (4.0f, R * 0.18f)), {}).drawForPath (g, thick);
+    g.setColour (light);
+    g.strokePath (core, juce::PathStrokeType (juce::jmax (1.6f, R * 0.05f), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    g.setColour (juce::Colours::white.withAlpha (0.9f));
+    g.strokePath (core, juce::PathStrokeType (juce::jmax (0.6f, R * 0.018f), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+}
+
+void knobRing (juce::Graphics& g, juce::Point<float> c, float D, float v, juce::Colour light)
+{
+    // light rising from the gap between knob and mount wall
+    const float R = D * 0.5f, rr = R * 1.075f;
+    const float a0 = -2.35619f, a1 = 2.35619f, av = a0 + (a1 - a0) * juce::jlimit (0.0f, 1.0f, v);
+    juce::Path track;
+    track.addCentredArc (c.x, c.y, rr, rr, 0.0f, a0, a1, true);
+    g.setColour (light.withAlpha (0.08f));
+    g.strokePath (track, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    if (v <= 0.002f) return;
+    juce::Path arc;
+    arc.addCentredArc (c.x, c.y, rr, rr, 0.0f, a0, av, true);
+    glowStroke (g, arc, light, 1.7f, 7.0f, 0.6f);
 }
 
 void knobScale (juce::Graphics& g, juce::Point<float> c, float D, bool numbers)
 {
     const float R = D * 0.5f;
     const float a0 = -2.35619f, a1 = 2.35619f;
-    const int ticks = 31;
+    const int ticks = 41;
     for (int i = 0; i < ticks; ++i)
     {
-        const bool major = i % 3 == 0;
+        const bool major = i % 4 == 0;
         const float a = a0 + (a1 - a0) * (float) i / (float) (ticks - 1);
         const juce::Point<float> d (std::sin (a), -std::cos (a));
-        const float r1 = R * 1.39f, r2 = R * (major ? 1.50f : 1.45f);
-        g.setColour (colours::text.withAlpha (major ? 0.62f : 0.26f));
-        g.drawLine (juce::Line<float> (c + d * r1, c + d * r2), major ? 1.25f : 0.9f);
+        const float r1 = R * 1.25f, r2 = R * (major ? 1.35f : 1.30f);
+        g.setColour (colours::text.withAlpha (major ? 0.55f : 0.20f));
+        g.drawLine (juce::Line<float> (c + d * r1, c + d * r2), major ? 1.1f : 0.8f);
     }
     if (! numbers) return;
-    g.setFont (label (juce::jmax (9.5f, R * 0.28f)));
+    g.setFont (label (juce::jmax (8.5f, R * 0.24f)));
     for (int k = 0; k <= 10; ++k)
     {
         const float a = a0 + (a1 - a0) * (float) k / 10.0f;
-        const juce::Point<float> p = c + juce::Point<float> (std::sin (a), -std::cos (a)) * (R * 1.70f);
-        g.setColour (colours::textDim.withAlpha (k % 5 == 0 ? 0.95f : 0.6f));
+        const juce::Point<float> p = c + juce::Point<float> (std::sin (a), -std::cos (a)) * (R * 1.52f);
+        g.setColour (colours::textDim.withAlpha (k % 5 == 0 ? 0.9f : 0.5f));
         g.drawText (juce::String (k), juce::Rectangle<float> (p.x - 10.0f, p.y - 7.0f, 20.0f, 14.0f), juce::Justification::centred, false);
     }
 }
@@ -688,5 +770,77 @@ juce::Image glassSheen (int w, int h, float radius)
     g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.10f), 0.0f, 0.0f, juce::Colours::white.withAlpha (0.0f), 0.0f, 3.0f, false));
     g.fillRect (0.0f, 0.0f, fw, 3.0f);
     return img;
+}
+//==============================================================================
+// SWEEP BAR logotype
+//
+// Monoline geometric letters on a cap-height grid: square counters, 45-degree chamfers instead of curves,
+// bevelled joins (every corner is a cut, never a point), detached crossbars that float off the stem.
+// A precision slit runs through the whole name at mid-height: that is the "sweep bar", and it carries light.
+Wordmark wordmark (juce::Point<float> origin, float H)
+{
+    Wordmark w;
+    const float u = H / 21.0f;               // design unit
+    const float t = 2.5f * u;                // stroke
+    const float i = t * 0.5f;                // centreline inset
+    const float ch = 4.2f * u;               // chamfer
+    const float m = H * 0.5f;                // mid line
+    const float track = 6.0f * u;
+    const float space = 15.0f * u;
+
+    struct Glyph { float width; std::function<void (juce::Path&, float)> draw; };
+    auto poly = [] (juce::Path& p, std::initializer_list<juce::Point<float>> pts, float x0)
+    {
+        bool first = true;
+        for (auto q : pts) { if (first) p.startNewSubPath (q.x + x0, q.y); else p.lineTo (q.x + x0, q.y); first = false; }
+    };
+    using P = juce::Point<float>;
+    const float wS = 15.5f * u, wW = 24.0f * u, wE = 13.5f * u, wP = 15.0f * u, wB = 15.5f * u, wA = 16.0f * u, wR = 15.5f * u;
+
+    std::vector<Glyph> glyphs {
+        { wS, [&] (juce::Path& p, float x) { poly (p, { P (wS, i), P (i + ch, i), P (i, i + ch), P (i, m - ch * 0.5f), P (i + ch * 0.5f, m),
+                                                       P (wS - i - ch * 0.5f, m), P (wS - i, m + ch * 0.5f), P (wS - i, H - i - ch), P (wS - i - ch, H - i), P (0.0f, H - i) }, x); } },
+        { wW, [&] (juce::Path& p, float x) { poly (p, { P (i, 0.0f), P (i, H - i - ch), P (i + ch, H - i), P (wW - i - ch, H - i), P (wW - i, H - i - ch), P (wW - i, 0.0f) }, x);
+                                            poly (p, { P (wW * 0.5f, H * 0.30f), P (wW * 0.5f, H - i) }, x); } },
+        { wE, [&] (juce::Path& p, float x) { poly (p, { P (wE, i), P (i + ch * 0.6f, i), P (i, i + ch * 0.6f), P (i, H - i - ch * 0.6f), P (i + ch * 0.6f, H - i), P (wE, H - i) }, x);
+                                            poly (p, { P (t + 2.4f * u, m), P (wE - 1.0f * u, m) }, x); } },
+        { wE, [&] (juce::Path& p, float x) { poly (p, { P (wE, i), P (i + ch * 0.6f, i), P (i, i + ch * 0.6f), P (i, H - i - ch * 0.6f), P (i + ch * 0.6f, H - i), P (wE, H - i) }, x);
+                                            poly (p, { P (t + 2.4f * u, m), P (wE - 1.0f * u, m) }, x); } },
+        { wP, [&] (juce::Path& p, float x) { poly (p, { P (i, H), P (i, i), P (wP - i - ch, i), P (wP - i, i + ch), P (wP - i, m - ch * 0.6f),
+                                                       P (wP - i - ch * 0.6f, m), P (t + 2.4f * u, m) }, x); } },
+        { space, [] (juce::Path&, float) {} },
+        { wB, [&] (juce::Path& p, float x) { poly (p, { P (i, H - i), P (i, i), P (wB - 1.2f * u - i - ch * 0.8f, i), P (wB - 1.2f * u - i, i + ch * 0.8f),
+                                                       P (wB - 1.2f * u - i, m - ch * 0.5f), P (wB - 1.2f * u - i - ch * 0.5f, m), P (t + 2.4f * u, m) }, x);
+                                            poly (p, { P (t + 2.4f * u, m), P (wB - i - ch * 0.5f, m), P (wB - i, m + ch * 0.5f), P (wB - i, H - i - ch * 0.8f),
+                                                       P (wB - i - ch * 0.8f, H - i), P (i, H - i) }, x); } },
+        { wA, [&] (juce::Path& p, float x) { poly (p, { P (i, H), P (i, i + ch), P (i + ch, i), P (wA - i - ch, i), P (wA - i, i + ch), P (wA - i, H) }, x);
+                                            poly (p, { P (t + 2.4f * u, m), P (wA - t - 2.4f * u, m) }, x); } },
+        { wR, [&] (juce::Path& p, float x) { poly (p, { P (i, H), P (i, i), P (wR - i - ch, i), P (wR - i, i + ch), P (wR - i, m - ch * 0.6f),
+                                                       P (wR - i - ch * 0.6f, m), P (t + 2.4f * u, m) }, x);
+                                            poly (p, { P (wR - 6.0f * u, m + t * 0.5f), P (wR - i, H - i - ch * 0.4f), P (wR - i, H) }, x); } },
+    };
+
+    const juce::PathStrokeType stroke (t, juce::PathStrokeType::beveled, juce::PathStrokeType::butt);
+    float x = 0.0f;
+    for (size_t g = 0; g < glyphs.size(); ++g)
+    {
+        juce::Path centre;
+        glyphs[g].draw (centre, x);
+        if (! centre.isEmpty())
+        {
+            juce::Path outline;
+            stroke.createStrokedPath (outline, centre);
+            outline.applyTransform (juce::AffineTransform::translation (origin.x, origin.y));
+            w.all.addPath (outline);
+            w.letters.push_back (outline);
+        }
+        x += glyphs[g].width + (g + 1 < glyphs.size() && glyphs[g].width != space && glyphs[g + 1].width != space ? track : 0.0f);
+    }
+    w.bounds = juce::Rectangle<float> (origin.x, origin.y, x, H);
+    w.slitY = origin.y + m;
+    w.slitHeight = 1.2f * u;
+    w.slitX0 = origin.x - 10.0f * u;
+    w.slitX1 = origin.x + x + 26.0f * u;
+    return w;
 }
 } // namespace skin

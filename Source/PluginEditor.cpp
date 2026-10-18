@@ -484,7 +484,7 @@ void CurveView::resized()
     bloomTight = juce::Image (juce::Image::ARGB, juce::jmax (1, p.getWidth() / 2), juce::jmax (1, p.getHeight() / 2), true);
 }
 
-void CurveView::paint (juce::Graphics& g)
+void CurveView::renderStatic (juce::Graphics& g)
 {
     const auto p = proc.currentParams();
     const int n = p.patternBeats;
@@ -512,17 +512,6 @@ void CurveView::paint (juce::Graphics& g)
     }
     g.setColour (juce::Colours::white.withAlpha (0.10f));
     g.drawLine (0.0f, base, W, base, 1.0f);
-
-    // ---- playhead: a column of light over the playing beat
-    if (proc.engine.uiPlaying.load())
-    {
-        const float x = (float) std::floor (proc.engine.uiPosition.load()) * bw;
-        g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.0f), 0.0f, 0.0f,
-                                                 juce::Colours::white.withAlpha (0.055f), 0.0f, H, false));
-        g.fillRect (juce::Rectangle<float> (x, 0.0f, bw, H));
-        g.setColour (juce::Colours::white.withAlpha (0.35f));
-        g.fillRect (juce::Rectangle<float> (x, 0.0f, 1.0f, H));
-    }
 
     // ---- curves, one per active beat
     struct Curve { juce::Path line; float x0, x1; juce::Colour a, b; };
@@ -580,7 +569,8 @@ void CurveView::paint (juce::Graphics& g)
             {
                 auto* px = (juce::PixelARGB*) d.getPixelPointer (x, y);
                 if (px->getAlpha() == 0) continue;
-                px->multiplyAlpha (fade);
+                // fine vertical striations: reads as spectral detail inside the light body
+                px->multiplyAlpha (fade * ((x % 3 == 0) ? 1.25f : 0.72f));
             }
         }
     }
@@ -643,6 +633,162 @@ void CurveView::paint (juce::Graphics& g)
         g.setColour (p.steps[(size_t) i] ? colours::muted : colours::dim);
         g.drawText (stepLabel (i, n), juce::Rectangle<float> ((float) i * bw + 5.0f, H + 4.0f, bw, 14.0f), juce::Justification::centredLeft, false);
     }
+}
+
+juce::String CurveView::staticKey() const
+{
+    const auto p = proc.currentParams();
+    juce::String k;
+    k << getWidth() << 'x' << getHeight() << '@' << displayScale (this) << '|' << p.patternBeats << '|' << (int) p.shape << '|'
+      << p.hitLength << '|' << juce::roundToInt (p.depth * 1000);
+    for (int i = 0; i < sweep::kMaxSteps; ++i) k << (p.steps[(size_t) i] ? '1' : '0') << (int) p.stepEffect[(size_t) i];
+    double sum = 0.0;
+    for (int b = 0; b < sweep::kMaxSteps; ++b)
+    {
+        k << (proc.curves.isDrawn (b) ? 'd' : '-');
+        for (int i = 0; i < sweep::kCurvePoints; ++i) sum += proc.curves.point (b, i) * (double) (i + 1 + b * 64);
+    }
+    k << '|' << juce::String (sum, 4);
+    return k;
+}
+
+void CurveView::paint (juce::Graphics& g)
+{
+    // The layered-light picture only changes when the pattern or a curve changes; cache it so the
+    // live energy layer can run at full frame rate for almost nothing.
+    const auto key = staticKey();
+    if (key != staticLayerKey || ! staticLayer.isValid())
+    {
+        const float disp = displayScale (this);
+        staticLayer = juce::Image (juce::Image::ARGB, juce::jmax (1, juce::roundToInt ((float) getWidth() * disp)),
+                                   juce::jmax (1, juce::roundToInt ((float) getHeight() * disp)), true);
+        juce::Graphics sg (staticLayer);
+        sg.addTransform (juce::AffineTransform::scale (disp));
+        renderStatic (sg);
+        staticLayerKey = key;
+    }
+    g.drawImage (staticLayer, getLocalBounds().toFloat());
+    paintEnergy (g);
+}
+
+double CurveView::playPosition()
+{
+    const double pos = proc.engine.uiPosition.load();
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    if (pos != lastPos) { lastPos = pos; lastPosMs = now; }
+    const double bpm = proc.engine.uiBpm.load();
+    const double ahead = juce::jlimit (0.0, 0.06, (now - lastPosMs) / 1000.0 * bpm / 60.0);   // between audio blocks
+    const int n = proc.currentParams().patternBeats;
+    return std::fmod (lastPos + ahead, (double) n);
+}
+
+void CurveView::tick()
+{
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    const float dt = lastTickMs > 0.0 ? (float) juce::jlimit (0.0, 0.1, (now - lastTickMs) / 1000.0) : 0.033f;
+    lastTickMs = now;
+    const bool playing = proc.engine.uiPlaying.load();
+
+    for (auto& pt : particles)
+    {
+        pt.pos += pt.vel * dt;
+        pt.vel = pt.vel * 0.97f + juce::Point<float> (0.0f, -6.0f * dt);
+        pt.life -= dt;
+    }
+    particles.erase (std::remove_if (particles.begin(), particles.end(), [] (const Particle& p) { return p.life <= 0.0f; }), particles.end());
+
+    if (playing)
+    {
+        // emit a few restrained sparks from the energy point while the curve is active
+        const auto p = proc.currentParams();
+        const double pos = playPosition();
+        const int beat = juce::jlimit (0, p.patternBeats - 1, (int) pos);
+        const float v = sweep::modulationAt (p, &proc.curves, pos);
+        if (p.steps[(size_t) beat] && v > 0.12f && particles.size() < 70)
+        {
+            const auto plot = plotArea();
+            const float bw = plot.getWidth() / (float) p.patternBeats;
+            const float base = plot.getHeight() - 12.0f, top = 26.0f;
+            const juce::Point<float> head ((float) pos * bw, base - v * (base - top));
+            const int count = v > 0.6f ? 2 : 1;
+            for (int k = 0; k < count; ++k)
+            {
+                Particle pt;
+                pt.pos = head;
+                pt.vel = { random.nextFloat() * 36.0f - 18.0f, -(12.0f + random.nextFloat() * 34.0f) };
+                pt.maxLife = pt.life = 0.5f + random.nextFloat() * 0.7f;
+                pt.size = 0.8f + random.nextFloat() * 1.1f;
+                pt.colour = (random.nextFloat() < 0.25f) ? skin::accentA (1) : skin::accentA ((int) p.stepEffect[(size_t) beat]);
+                particles.push_back (pt);
+            }
+        }
+    }
+    if (playing || ! particles.empty())
+        repaint();
+}
+
+void CurveView::paintEnergy (juce::Graphics& g)
+{
+    const auto p = proc.currentParams();
+    const int n = p.patternBeats;
+    const auto plot = plotArea();
+    const float W = plot.getWidth(), H = plot.getHeight();
+    const float bw = W / (float) n, top = 26.0f, base = H - 12.0f;
+    auto yFor = [&] (float v) { return base - v * (base - top); };
+
+    g.saveState();
+    g.reduceClipRegion (plot.toNearestInt());
+
+    // particles
+    for (const auto& pt : particles)
+    {
+        const float a = juce::jlimit (0.0f, 1.0f, pt.life / pt.maxLife);
+        const float rr = pt.size * 3.0f;
+        g.setGradientFill (juce::ColourGradient (pt.colour.withAlpha (0.30f * a), pt.pos.x, pt.pos.y, pt.colour.withAlpha (0.0f), pt.pos.x + rr, pt.pos.y, true));
+        g.fillEllipse (pt.pos.x - rr, pt.pos.y - rr, rr * 2.0f, rr * 2.0f);
+        g.setColour (pt.colour.interpolatedWith (juce::Colours::white, 0.65f).withAlpha (a));
+        g.fillEllipse (pt.pos.x - pt.size * 0.6f, pt.pos.y - pt.size * 0.6f, pt.size * 1.2f, pt.size * 1.2f);
+    }
+
+    if (proc.engine.uiPlaying.load())
+    {
+        const double pos = playPosition();
+        const int beat = juce::jlimit (0, n - 1, (int) pos);
+        const float x = (float) pos * bw;
+        // the playing beat: a faint column of light, and a precise hairline at the exact position
+        g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.0f), 0.0f, 0.0f, juce::Colours::white.withAlpha (0.045f), 0.0f, H, false));
+        g.fillRect (juce::Rectangle<float> ((float) beat * bw, 0.0f, bw, H));
+        g.setColour (juce::Colours::white.withAlpha (0.16f));
+        g.fillRect (juce::Rectangle<float> (x - 0.5f, 0.0f, 1.0f, H));
+
+        if (p.steps[(size_t) beat])
+        {
+            const auto c = skin::accentA ((int) p.stepEffect[(size_t) beat]);
+            // energy flowing along the curve: a hot trail behind the point
+            juce::Path trail;
+            const double from = juce::jmax ((double) beat, pos - 0.14);
+            for (int k = 0; k <= 18; ++k)
+            {
+                const double q = from + (pos - from) * (double) k / 18.0;
+                const juce::Point<float> pt ((float) q * bw, yFor (sweep::modulationAt (p, &proc.curves, q)));
+                if (k == 0) trail.startNewSubPath (pt); else trail.lineTo (pt);
+            }
+            const float tx0 = (float) from * bw;
+            g.setGradientFill (juce::ColourGradient (c.withAlpha (0.0f), tx0, 0.0f, juce::Colours::white.withAlpha (0.95f), x, 0.0f, false));
+            g.strokePath (trail, juce::PathStrokeType (2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            const float y = yFor (sweep::modulationAt (p, &proc.curves, pos));
+            g.setGradientFill (juce::ColourGradient (c.withAlpha (0.75f), x, y, c.withAlpha (0.0f), x + 13.0f, y, true));
+            g.fillEllipse (x - 13.0f, y - 13.0f, 26.0f, 26.0f);
+            g.setColour (juce::Colours::white);
+            g.fillEllipse (x - 2.2f, y - 2.2f, 4.4f, 4.4f);
+        }
+        else
+        {
+            g.setColour (skin::accentA (1).withAlpha (0.45f));
+            g.fillEllipse (x - 1.8f, base - 1.8f, 3.6f, 3.6f);
+        }
+    }
+    g.restoreState();
 }
 
 void CurveView::mouseDown (const juce::MouseEvent& e)
@@ -803,24 +949,11 @@ void Knob::paint (juce::Graphics& g)
     const float v = (float) param->getValue();
     const float angle = kKnobStart + (kKnobEnd - kKnobStart) * v;
 
-    // value ring: engraved channel on the plate with a luminous fill
-    const float rr = R * 1.27f;
-    juce::Path track;
-    track.addCentredArc (c.x, c.y, rr, rr, 0.0f, kKnobStart, kKnobEnd, true);
-    g.setColour (juce::Colours::black.withAlpha (0.75f));
-    g.strokePath (track, juce::PathStrokeType (3.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    g.setColour (juce::Colours::white.withAlpha (0.05f));
-    g.strokePath (track, juce::PathStrokeType (3.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded),
-                  juce::AffineTransform::translation (0.0f, 1.0f));
-    if (v > 0.002f)
-    {
-        juce::Path arc;
-        arc.addCentredArc (c.x, c.y, rr, rr, 0.0f, kKnobStart, angle, true);
-        skin::glowStroke (g, arc, colour, 1.8f, 6.0f, 0.55f);
-    }
-    skin::knobPointer (g, c, D, angle);
+    // value light rising from the gap inside the mount, and the luminous indicator slot
+    skin::knobRing (g, c, D, v, colour);
+    skin::knobPointer (g, c, D, angle, colour);
 
-    const float ly = c.y + R * 1.88f;
+    const float ly = c.y + R * 1.74f;
     legend (g, caption.toUpperCase(), { 0.0f, ly, (float) getWidth(), 15.0f }, juce::Justification::centred, skin::label (12.5f), colours::text);
     g.setColour (colours::muted);
     g.setFont (skin::numeric (12.5f, skin::Weight::Medium));
@@ -1183,7 +1316,9 @@ void SweepbarEditor::mouseDown (const juce::MouseEvent& e)
 
 void SweepbarEditor::resized()
 {
-    logoPlate     = { 20, 16, 52, 52 };
+    logoPlate     = { 20, 16, 52, 52 };   // (unused since 0.6: the logotype is embossed in the chassis)
+    logo          = skin::wordmark ({ 28.0f, 17.0f }, 27.0f);
+    logoRegion    = juce::Rectangle<float> (logo.slitX0 - 8.0f, 6.0f, logo.slitX1 - logo.slitX0 + 18.0f, 54.0f).getSmallestIntegerContainer();
     transportWell = { 378, 18, 284, 48 };
     finishButton  = { 842, 22, 178, 40 };
     effectTray    = { 20, 84, 1000, 58 };
@@ -1242,7 +1377,7 @@ void SweepbarEditor::rebuildBackground()
     rel.grooveLine ({ 18.0f, 789.0f }, { (float) w - 18.0f, 789.0f }, 1.3f, 1.2f);
 
     // header hardware
-    rel.plate (logoPlate.toFloat(), 10.0f, 6.0f, 2.2f, R::Plate);
+    addLogoRelief (rel, introLength);
     rel.recess (transportWell.toFloat(), 10.0f, 9.0f, 2.8f, R::Glass);
     rel.plate (finishButton.toFloat(), 7.0f, 5.0f, 2.0f, R::Cap);
 
@@ -1297,12 +1432,26 @@ void SweepbarEditor::rebuildBackground()
     {
         juce::Graphics g (background);
         g.addTransform (juce::AffineTransform::scale (disp));
-        legend (g, "SWEEP BAR", { 88.0f, 18.0f, 240.0f, 28.0f }, juce::Justification::centredLeft,
-                skin::font (24.0f, skin::Weight::SemiBold).withExtraKerningFactor (0.16f), colours::text);
-        legend (g, "creative movement effect", { 89.0f, 45.0f, 240.0f, 18.0f }, juce::Justification::centredLeft,
-                skin::font (13.5f).withExtraKerningFactor (0.05f), colours::muted);
         for (auto* k : { &depthKnob, &mixKnob, &smoothKnob })
             skin::knobScale (g, k->centreInParent(), k->diameter(), true);
+        // ultra-thin light lines built into the surfaces
+        auto hairline = [&] (float x0, float x1, float y, juce::Colour c, float alpha)
+        {
+            juce::ColourGradient grad (c.withAlpha (0.0f), x0, y, c.withAlpha (0.0f), x1, y, false);
+            grad.addColour (0.18, c.withAlpha (alpha));
+            grad.addColour (0.82, c.withAlpha (alpha));
+            juce::Path line;
+            line.startNewSubPath (x0, y);
+            line.lineTo (x1, y);
+            juce::Path halo;
+            juce::PathStrokeType (1.4f).createStrokedPath (halo, line);
+            juce::DropShadow (c.withAlpha (alpha * 0.5f), 3, {}).drawForPath (g, halo);
+            g.setGradientFill (grad);
+            g.strokePath (line, juce::PathStrokeType (0.6f));
+        };
+        hairline ((float) displayWell.getX() + 14.0f, (float) displayWell.getRight() - 14.0f, (float) displayWell.getY() + 3.6f, skin::accentA (3), 0.55f);
+        hairline ((float) effectTray.getX() + 30.0f, (float) effectTray.getRight() - 30.0f, (float) effectTray.getBottom() - 1.8f, skin::accentA (1), 0.22f);
+        hairline ((float) transportWell.getX() + 18.0f, (float) transportWell.getRight() - 18.0f, (float) transportWell.getBottom() - 3.2f, skin::accentA (0), 0.35f);
         legend (g, "ACROSS 4 BARS", { (float) rulerPlate.getX() + 16.0f, (float) rulerPlate.getY() + 14.0f, 200.0f, 18.0f },
                 juce::Justification::centredLeft, skin::label (13.0f), colours::text);
         legend (g, "INPUT", { 22.0f, 800.0f, 62.0f, 24.0f }, juce::Justification::centredLeft, skin::label (12.5f), colours::text);
@@ -1336,27 +1485,17 @@ void SweepbarEditor::paint (juce::Graphics& g)
     if (backgroundFinish != finishIndex() || std::abs (backgroundScale - displayScale (this)) > 0.01f)
         rebuildBackground();
     g.drawImage (background, getLocalBounds().toFloat());
+    if (introStartMs < 0.0 && introOverride < 0.0)
+    {
+        introStartMs = juce::Time::getMillisecondCounterHiRes();
+        introRunning = true;
+        startTimerHz (60);
+    }
 
     const bool playing = proc.engine.uiPlaying.load();
 
-    // logo: a luminous movement curve
-    {
-        const auto lb = logoPlate.toFloat().reduced (11.0f, 14.0f);
-        juce::Path wave;
-        for (int k = 0; k <= 40; ++k)
-        {
-            const float t = (float) k / 40.0f;
-            const float y = lb.getCentreY() - std::sin (t * kPi * 2.2f + 0.3f) * lb.getHeight() * 0.45f * (0.6f + 0.4f * std::sin (t * kPi));
-            if (k == 0) wave.startNewSubPath (lb.getX() + t * lb.getWidth(), y); else wave.lineTo (lb.getX() + t * lb.getWidth(), y);
-        }
-        juce::Path thick;
-        juce::PathStrokeType (3.0f).createStrokedPath (thick, wave);
-        juce::DropShadow (skin::accentA (1).withAlpha (0.6f), 6, {}).drawForPath (g, thick);
-        g.setGradientFill (juce::ColourGradient (skin::accentA (1), lb.getX(), 0.0f, skin::accentA (0), lb.getRight(), 0.0f, false));
-        g.strokePath (wave, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        g.setColour (juce::Colours::white.withAlpha (0.7f));
-        g.strokePath (wave, juce::PathStrokeType (0.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    }
+    // logotype: light in the slit, and the opening sequence
+    paintLogoLight (g, introTime());
 
     // transport display behind glass
     {
@@ -1404,10 +1543,157 @@ void SweepbarEditor::paint (juce::Graphics& g)
     g.drawText (proc.apvts.getParameter ("outGain")->getCurrentValueAsText(), 578, 800, 64, 24, juce::Justification::centredRight);
 }
 
+//==============================================================================
+// SWEEP BAR title sequence
+//
+//  0.15 s  a point of light ignites at the left end of the slit cut through the name
+//  0.15-1.1  it sweeps right along the slit; as it passes each letter, the letter rises out of the
+//          chassis. Every frame is re-rendered by the hardware renderer, so the rising metal is lit,
+//          occluded and shadowed for real, not faded or scaled.
+//  0.95-1.6  a specular glint crosses the finished letters; the product line is revealed behind it
+//  1.8     settles: the slit keeps a steady, quiet light
+namespace
+{
+float easeInOut (float x) { x = juce::jlimit (0.0f, 1.0f, x); return x < 0.5f ? 4.0f * x * x * x : 1.0f - std::pow (-2.0f * x + 2.0f, 3.0f) * 0.5f; }
+float smoothRise (float x) { x = juce::jlimit (0.0f, 1.0f, x); return x * x * (3.0f - 2.0f * x); }
+}
+
+void SweepbarEditor::setIntroTime (double seconds)
+{
+    introOverride = seconds;
+    introFrameTime = -1.0;
+    repaint();
+}
+
+double SweepbarEditor::introTime() const
+{
+    if (introOverride >= 0.0) return introOverride;
+    if (introStartMs < 0.0) return 0.0;
+    return (juce::Time::getMillisecondCounterHiRes() - introStartMs) / 1000.0;
+}
+
+void SweepbarEditor::addLogoRelief (skin::Relief& rel, double t) const
+{
+    const float headX = logo.slitX0 + (logo.slitX1 - logo.slitX0) * easeInOut ((float) (t - 0.15) / 0.95f);
+    for (auto& letter : logo.letters)
+    {
+        const float rise = t >= introLength ? 1.0f : smoothRise ((headX - letter.getBounds().getX() + 4.0f) / 30.0f);
+        if (rise > 0.002f)
+            rel.emboss (letter, 2.6f * rise, 0.6f, skin::Relief::Titanium, skin::Relief::Edge);
+    }
+    juce::Path slit;
+    slit.addRectangle (logo.slitX0, logo.slitY - logo.slitHeight * 0.5f, logo.slitX1 - logo.slitX0, logo.slitHeight);
+    rel.emboss (slit, -5.5f, 0.6f, skin::Relief::Floor, skin::Relief::Edge);
+}
+
+void SweepbarEditor::paintLogoLight (juce::Graphics& g, double t)
+{
+    const bool intro = t < introLength;
+    if (intro)
+    {
+        if (std::abs (t - introFrameTime) > 1.0e-4 || ! introFrame.isValid())
+        {
+            const float disp = backgroundScale > 0.0f ? backgroundScale : 1.0f;
+            skin::Relief rel (logoRegion.getWidth(), logoRegion.getHeight(), juce::jmax (2.0f, disp * 1.34f),
+                              skin::finishes()[(size_t) finishIndex()].tint, false, logoRegion.getPosition().toFloat());
+            rel.plate ({ 0.0f, 0.0f, (float) getWidth(), (float) getHeight() }, 12.0f, 3.0f, 3.5f, skin::Relief::Chassis, skin::Relief::Edge);
+            addLogoRelief (rel, t);
+            introFrame = rel.render().rescaled (juce::roundToInt ((float) logoRegion.getWidth() * disp), juce::roundToInt ((float) logoRegion.getHeight() * disp),
+                                                juce::Graphics::highResamplingQuality);
+            introFrameTime = t;
+        }
+        g.drawImage (introFrame, logoRegion.toFloat());
+    }
+
+    const float y = logo.slitY, x0 = logo.slitX0 + 1.0f, x1 = logo.slitX1 - 1.0f;
+    const float headX = logo.slitX0 + (logo.slitX1 - logo.slitX0) * easeInOut ((float) (t - 0.15) / 0.95f);
+    const float lit = intro ? juce::jmin (x1, headX) : x1;
+    const juce::Colour uv = skin::accentA (3), silver = skin::accentA (1), cyan = skin::accentA (0);
+
+    // the bar of light living in the slit
+    if (lit > x0 + 0.5f && t > 0.15)
+    {
+        juce::ColourGradient grad (uv.withAlpha (0.0f), x0, y, cyan.withAlpha (0.0f), x1, y, false);
+        grad.addColour (0.10, uv.withAlpha (0.75f));
+        grad.addColour (0.55, silver.withAlpha (0.95f));
+        grad.addColour (0.86, cyan.withAlpha (0.8f));
+        juce::Path line;
+        line.startNewSubPath (x0, y);
+        line.lineTo (lit, y);
+        juce::Path halo;
+        juce::PathStrokeType (1.6f).createStrokedPath (halo, line);
+        juce::DropShadow (uv.withAlpha (0.28f), 4, {}).drawForPath (g, halo);
+        g.setGradientFill (grad);
+        g.strokePath (line, juce::PathStrokeType (0.7f));
+        if (intro)
+        {
+            // hot trail behind the moving light
+            juce::Path trail;
+            trail.startNewSubPath (juce::jmax (x0, lit - 80.0f), y);
+            trail.lineTo (lit, y);
+            g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.0f), juce::jmax (x0, lit - 80.0f), y,
+                                                     juce::Colours::white.withAlpha (0.95f), lit, y, false));
+            g.strokePath (trail, juce::PathStrokeType (1.1f));
+        }
+    }
+
+    if (intro)
+    {
+        // the moving light itself: a small core with a restrained horizontal (anamorphic) flare
+        const float headAlpha = (float) juce::jlimit (0.0, 1.0, (t - 0.12) / 0.06) * (float) juce::jlimit (0.0, 1.0, (1.22 - t) / 0.14);
+        if (headAlpha > 0.0f)
+        {
+            g.setGradientFill (juce::ColourGradient (silver.withAlpha (0.55f * headAlpha), headX, y, silver.withAlpha (0.0f), headX + 7.0f, y, true));
+            g.fillEllipse (headX - 7.0f, y - 7.0f, 14.0f, 14.0f);
+            g.setColour (juce::Colours::white.withAlpha (headAlpha));
+            g.fillEllipse (headX - 1.6f, y - 1.6f, 3.2f, 3.2f);
+            juce::ColourGradient streak (silver.withAlpha (0.0f), headX - 52.0f, y, silver.withAlpha (0.0f), headX + 52.0f, y, false);
+            streak.addColour (0.5, juce::Colours::white.withAlpha (0.7f * headAlpha));
+            g.setGradientFill (streak);
+            g.fillRect (juce::Rectangle<float> (headX - 52.0f, y - 0.5f, 104.0f, 1.0f));
+            g.setColour (juce::Colours::white.withAlpha (0.45f * headAlpha));
+            g.fillRect (juce::Rectangle<float> (headX - 0.5f, y - 4.0f, 1.0f, 8.0f));
+        }
+
+        // specular glint crossing the finished letters
+        const float gp = (float) juce::jlimit (0.0, 1.0, (t - 0.95) / 0.65);
+        if (gp > 0.0f && gp < 1.0f)
+        {
+            const auto b = logo.bounds;
+            const float gx = b.getX() - 30.0f + (b.getWidth() + 60.0f) * easeInOut (gp);
+            g.saveState();
+            g.reduceClipRegion (logo.all);
+            juce::ColourGradient band (juce::Colours::white.withAlpha (0.0f), gx - 16.0f, b.getY(), juce::Colours::white.withAlpha (0.0f), gx + 10.0f, b.getBottom(), false);
+            band.addColour (0.5, juce::Colours::white.withAlpha (0.42f));
+            g.setGradientFill (band);
+            g.fillRect (b.expanded (4.0f));
+            g.restoreState();
+        }
+    }
+
+    // product line, revealed behind the glint
+    const float reveal = intro ? smoothRise ((float) (t - 0.95) / 0.65f) : 1.0f;
+    if (reveal > 0.0f)
+    {
+        const juce::Rectangle<float> tag (logo.bounds.getX() + 1.0f, logo.bounds.getBottom() + 6.0f, 320.0f, 12.0f);
+        g.saveState();
+        g.reduceClipRegion (tag.withWidth (tag.getWidth() * reveal).toNearestInt());
+        legend (g, "CREATIVE MOVEMENT EFFECT", tag, juce::Justification::centredLeft, skin::label (10.5f).withExtraKerningFactor (0.42f), colours::muted);
+        g.restoreState();
+    }
+}
+
 void SweepbarEditor::timerCallback()
 {
+    if (introRunning)
+    {
+        const auto area = logoRegion.expanded (60, 14);
+        if (introTime() >= introLength) { introRunning = false; introFrame = {}; startTimerHz (30); }
+        repaint (area);
+    }
     inMeter.tick();
     outMeter.tick();
+    curve.tick();
 
     const auto sig = visualSignature();
     if (sig == lastSignature) return;

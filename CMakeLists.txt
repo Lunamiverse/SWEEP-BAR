@@ -4,7 +4,7 @@
 #   cmake --build build --config Release
 # GitHub Actions builds this on every push (.github/workflows/build.yml).
 cmake_minimum_required (VERSION 3.22)
-project (Sweepbar VERSION 0.5.0)
+project (Sweepbar VERSION 0.6.0)
 
 set (JUCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/JUCE" CACHE PATH "Path to JUCE 7")
 add_subdirectory (${JUCE_DIR} JUCE)

@@ -47,9 +47,9 @@
 #define JucePlugin_ProducesMidiOutput   0
 #define JucePlugin_IsMidiEffect         0
 #define JucePlugin_EditorRequiresKeyboardFocus 0
-#define JucePlugin_Version              0.5.0
-#define JucePlugin_VersionCode          0x00000500
-#define JucePlugin_VersionString        "0.5.0"
+#define JucePlugin_Version              0.6.0
+#define JucePlugin_VersionCode          0x00000600
+#define JucePlugin_VersionString        "0.6.0"
 #define JucePlugin_VSTUniqueID          JucePlugin_PluginCode
 #define JucePlugin_VSTNumMidiInputs     0
 #define JucePlugin_VSTNumMidiOutputs    0
