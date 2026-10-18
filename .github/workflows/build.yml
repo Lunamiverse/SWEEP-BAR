@@ -89,7 +89,7 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          $v = (Select-String -Path CMakeLists.txt -Pattern 'VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          $v = (Select-String -Path CMakeLists.txt -Pattern '^project.*VERSION ([0-9.]+)').Matches[0].Groups[1].Value
           New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive -Path build/Sweepbar_artefacts/Release/VST3/Sweepbar.vst3, README.md -DestinationPath "dist/SweepBar-$v-Windows-VST3.zip"
 
@@ -128,3 +128,7 @@ jobs:
             || gh release create "$TAG" --target "$GITHUB_SHA" --title "SWEEP BAR $VERSION" --latest \
                  --notes "**Mac:** download SweepBar-$VERSION-macOS-Installer.pkg (universal: Apple Silicon + Intel, AU + VST3). The first time, right-click the .pkg and choose Open, since the build is not notarized. **Windows:** run SweepBarSetup-$VERSION-Windows.exe (VST3 for FL Studio)."
           gh release upload "$TAG" dist/* --clobber
+          # remove assets that are no longer part of this build
+          for a in $(gh release view "$TAG" --json assets -q '.assets[].name'); do
+            [ -e "dist/$a" ] || gh release delete-asset "$TAG" "$a" -y
+          done
