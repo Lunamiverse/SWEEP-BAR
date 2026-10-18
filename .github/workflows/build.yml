@@ -5,118 +5,32 @@ on:
     branches: [main]
     tags: ['v*']
   release:
-    types: [published]
-  workflow_dispatch:
-
-env:
-  JUCE_TAG: 7.0.12
-
-jobs:
-  macos:
-    name: macOS (AU + VST3, universal)
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Get JUCE
-        run: git clone --depth 1 --branch "$JUCE_TAG" https://github.com/juce-framework/JUCE.git JUCE
-
-      - name: Configure
-        run: >
-          cmake -B build -DJUCE_DIR=JUCE -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
-
-      - name: Build
-        run: cmake --build build --config Release -j 4
-
-      - name: Sign (ad-hoc) and package
-        run: |
-          set -e
-          A=build/Sweepbar_artefacts/Release
-          VERSION=$(grep -E '^project' CMakeLists.txt | sed -E 's/.*VERSION ([0-9.]+).*/\1/')
-          # Apple Silicon only loads signed code: sign ad-hoc (no Apple developer certificate)
-          codesign --force --deep --sign - "$A/VST3/Sweepbar.vst3"
-          codesign --force --deep --sign - "$A/AU/Sweepbar.component"
-          lipo -info "$A/VST3/Sweepbar.vst3/Contents/MacOS/Sweepbar"
-
-          mkdir -p dist pkgroot/Library/Audio/Plug-Ins/VST3 pkgroot/Library/Audio/Plug-Ins/Components
-          cp -R "$A/VST3/Sweepbar.vst3" pkgroot/Library/Audio/Plug-Ins/VST3/
-          cp -R "$A/AU/Sweepbar.component" pkgroot/Library/Audio/Plug-Ins/Components/
-          pkgbuild --root pkgroot --identifier com.sweepbar.plugin --version "$VERSION" \
-                   --install-location / "dist/SweepBar-$VERSION-macOS-Installer.pkg"
-
-          mkdir -p "zip/SweepBar-$VERSION-macOS"
-          cp -R "$A/VST3/Sweepbar.vst3" "$A/AU/Sweepbar.component" README.md "zip/SweepBar-$VERSION-macOS/"
-          cp Resources/fonts/OFL.txt "zip/SweepBar-$VERSION-macOS/FONT-LICENSE-OFL.txt"
-          (cd zip && ditto -c -k --sequesterRsrc --keepParent "SweepBar-$VERSION-macOS" "../dist/SweepBar-$VERSION-macOS.zip")
-          ls -la dist
-
-      - name: Verify universal binaries (Apple Silicon + Intel)
-        run: |
-          A=build/Sweepbar_artefacts/Release
-          lipo "$A/VST3/Sweepbar.vst3/Contents/MacOS/Sweepbar" -verify_arch arm64 x86_64
-          lipo "$A/AU/Sweepbar.component/Contents/MacOS/Sweepbar" -verify_arch arm64 x86_64
-          echo "universal: OK"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos
-          path: dist/*
-
-      - name: Validate the Audio Unit with Apple's auval
-        continue-on-error: true
-        run: |
-          mkdir -p ~/Library/Audio/Plug-Ins/Components
-          cp -R build/Sweepbar_artefacts/Release/AU/Sweepbar.component ~/Library/Audio/Plug-Ins/Components/
-          killall -9 AudioComponentRegistrar 2>/dev/null || true
-          sleep 3
-          auval -v aufx Swb1 Swbp
-
-  windows:
-    name: Windows (VST3, MSVC)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Get JUCE
-        shell: bash
-        run: git clone --depth 1 --branch "$JUCE_TAG" https://github.com/juce-framework/JUCE.git JUCE
-
-      - name: Build
-        shell: bash
-        run: |
-          cmake -B build -DJUCE_DIR=JUCE
-          cmake --build build --config Release -j 4
-
-      - name: Package
-        shell: pwsh
-        run: |
-          $v = (Select-String -Path CMakeLists.txt -Pattern 'VERSION ([0-9.]+)').Matches[0].Groups[1].Value
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive -Path build/Sweepbar_artefacts/Release/VST3/Sweepbar.vst3, README.md -DestinationPath "dist/SweepBar-$v-Windows-VST3.zip"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows
-          path: dist/*
-
-  release:
     name: Publish release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [macos]
+    # Publishes v<version from CMakeLists.txt> on every push to main (re-uploads assets if it exists).
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [macos, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: macos
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows
           path: dist
       - name: Create or update the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --title "SWEEP BAR ${GITHUB_REF_NAME#v}" \
-                 --notes "Mac: open the .pkg installer (right-click > Open the first time; see README). Windows: run SweepBarSetup.exe."
-          gh release upload "$GITHUB_REF_NAME" dist/* -R "$GITHUB_REPOSITORY" --clobber
+          VERSION=$(grep -E '^project' CMakeLists.txt | sed -E 's/.*VERSION ([0-9.]+).*/\1/')
+          TAG="v$VERSION"
+          cp installer/prebuilt/SweepBarSetup-$VERSION-Windows.exe dist/ 2>/dev/null || true
+          ls -la dist
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --target "$GITHUB_SHA" --title "SWEEP BAR $VERSION" --latest \
+                 --notes "**Mac:** download SweepBar-$VERSION-macOS-Installer.pkg (universal: Apple Silicon + Intel, AU + VST3). The first time, right-click the .pkg and choose Open, since the build is not notarized. **Windows:** run SweepBarSetup-$VERSION-Windows.exe (VST3 for FL Studio)."
+          gh release upload "$TAG" dist/* --clobber
